@@ -23,7 +23,7 @@ from nepi_ros_interfaces.srv import ImageClassifierStatusQuery, ImageClassifierS
 from nepi_edge_sdk_base.save_cfg_if import SaveCfgIF
 
 
-AI_NAME = 'Darknet' # Use in display menus
+AI_NAME = 'Pytorch' # Use in display menus
 FILE_TYPE = 'AIF'
 AI_DICT = dict(
     description = 'Pytorch ai framework support',
@@ -32,41 +32,44 @@ AI_DICT = dict(
     node_file = 'nepi_pytorch_ros.py',
     node_name = 'nepi_pytorch_ros',
     launch_file = 'pytorch_ros.launch',
+    models_folder = 'pytorch',
     model_prefix = 'pytorch_',
-    models_path = '/mnt/nepi_storage/ai_models/pytorch'
 )
 
 class PytorchAIF(object):
-    def __init__(self, ai_dict,node_namespace):
+    def __init__(self, ai_dict,node_namespace, models_lib_path):
       if node_namespace[-1] == "/":
         node_namespace = node_namespace[:-1]
       self.node_namespace = node_namespace
+      self.models_lib_path = models_lib_path
       self.pkg_name = ai_dict['pkg_name']
       self.node_name = ai_dict['node_name']
       self.launch_file = ai_dict['launch_file']
       self.model_prefix = ai_dict['model_prefix']
-      self.model_search_path = ai_dict['models_path']
-      threshold_namespace = self.node_namespace + '/nepi_darknet_ros/set_threshold'
+      self.models_folder = ai_dict['models_folder']
+      self.models_folder_path =  os.path.join(self.models_lib_path, self.models_folder)
+      rospy.loginfo("Pytorch models path: " + self.models_folder_path)
+      threshold_namespace = self.node_namespace + '/nepi_pytorch_ros/set_threshold'
       self.set_threshold_pub = rospy.Publisher(threshold_namespace, Float32, queue_size=1, latch=True)
     
     #################
-    # Darknet Model Functions
+    # Pytorch Model Functions
 
     def getModelsDict(self):
         models_dict = dict()
         classifier_name_list = []
         classifier_size_list = []
         classifier_classes_list = []
-        # Try to obtain the path to Darknet models from the system_mgr
-        cfg_path_config_folder = os.path.join(self.model_search_path, 'config')
-        rospy.loginfo("Darknet looking for models config files in folder: " + cfg_path_config_folder)
-        # Grab the list of all existing darknet cfg files
+        # Try to obtain the path to Pytorch models from the system_mgr
+        cfg_path_config_folder = os.path.join(models_folder, 'config')
+        rospy.loginfo("Pytorch looking for models config files in folder: " + cfg_path_config_folder)
+        # Grab the list of all existing pytorch cfg files
         self.cfg_files = glob.glob(os.path.join(cfg_path_config_folder,'*.yaml'))
         # Remove the ros.yaml file -- that one doesn't represent a selectable trained neural net
         try:
             self.cfg_files.remove(os.path.join(cfg_path_config_folder,'ros.yaml'))
         except:
-            rospy.logwarn("Unexpected: ros.yaml is missing from the darknet config path " + cfg_path_config_folder)
+            rospy.logwarn("Unexpected: ros.yaml is missing from the pytorch config path " + cfg_path_config_folder)
 
         for f in self.cfg_files:
             yaml_stream = open(f, 'r')
@@ -75,14 +78,14 @@ class PytorchAIF(object):
             #rospy.logwarn("" + str(cfg_dict))
             
             yaml_stream.close()
-            if ("yolo_model" not in cfg_dict) or ("weight_file" not in cfg_dict["yolo_model"]) or ("name" not in cfg_dict["yolo_model"]["weight_file"]):
+            if ("ai_model" not in cfg_dict) or ("weight_file" not in cfg_dict["ai_model"]) or ("name" not in cfg_dict["ai_model"]["weight_file"]):
                 rospy.logerr("Debug: " + str(cfg_dict))
                 rospy.logwarn("File does not appear to be a valid A/I model config file: " + f + "... not adding this classifier")
                 continue
 
 
             classifier_name = os.path.splitext(os.path.basename(f))[0]
-            weight_file = os.path.join(self.model_search_path, "yolo_network_config", "weights",cfg_dict["yolo_model"]["weight_file"]["name"])
+            weight_file = os.path.join(self.models_folder_path, "models", "weights",cfg_dict["ai_model"]["weight_file"]["name"])
             if not os.path.exists(weight_file):
                 rospy.logwarn("Classifier " + classifier_name + " specifies non-existent weights file " + weight_file + "... not adding this classifier")
                 continue
@@ -104,18 +107,17 @@ class PytorchAIF(object):
 
 
     def startClassifier(self, classifier, input_img, threshold):
-        # Build Darknet new classifier launch command
+        # Build Pytorch new classifier launch command
         launch_cmd_line = [
             "roslaunch", self.pkg_name, self.launch_file,
             "namespace:=" + self.node_namespace, 
-            "yolo_weights_path:=" + os.path.join(self.model_search_path, "yolo_network_config/weights"),
-            "yolo_config_path:=" + os.path.join(self.model_search_path, "yolo_network_config/cfg"),
-            "ros_param_file:=" + os.path.join(self.model_search_path, "config/ros.yaml"),
-            "network_param_file:=" + os.path.join(self.model_search_path, "config", classifier + ".yaml"),
+            "weights_path:=" + os.path.join(self.models_folder_path, "models/weights"),
+            "config_path:=" + os.path.join(self.models_folder_path, "models/cfg"),
+            "network_param_file:=" + os.path.join(self.models_folder_path, "config", classifier + ".yaml"),
             "input_img:=" + input_img,
             "detection_threshold:=" + str(threshold)
         ]
-        rospy.loginfo("Launching Darknet ROS Process: " + str(launch_cmd_line))
+        rospy.loginfo("Launching Pytorch ROS Process: " + str(launch_cmd_line))
         self.ros_process = subprocess.Popen(launch_cmd_line)
         
 

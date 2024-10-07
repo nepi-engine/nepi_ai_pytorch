@@ -7,11 +7,12 @@
   <arg name="namespace" default="/nepi/dev_id/" />
 
   <!-- Config and weights folder. -->
-  <arg name="yolo_weights_path"          default="$(find nepi_pytorch_ros)/yolo_network_config/weights"/>
-  <arg name="yolo_config_path"           default="$(find nepi_pytorch_ros)/yolo_network_config/cfg"/>
+  <arg name="weights_path"          default="$(find nepi_darknet_ros)/yolo_network_config/weights"/>
+  <arg name="config_path"           default="$(find nepi_darknet_ros)/yolo_network_config/cfg"/>
   
   <!-- ROS and network parameter files -->
-  <arg name="network_param_file"         default="$(find nepi_pytorch_ros)/config/yolov5s.yaml"/>
+  <arg name="ros_param_file"             default="$(find nepi_darknet_ros)/config/ros.yaml"/>
+  <arg name="network_param_file"         default="$(find nepi_darknet_ros)/config/yolov3-tiny.yaml"/>
 
   <!-- Input image -->
   <arg name="input_img"                  default="$(arg namespace)/idx/color_2d_image"/>
@@ -20,13 +21,13 @@
   <arg name="detector_threshold"        default="0.3"/>
 
   <!-- Load parameters -->
-  <rosparam command="load" ns="$(arg namespace)/nepi_pytorch_ros" file="$(arg ros_param_file)"/>
-  <rosparam command="load" ns="$(arg namespace)/nepi_pytorch_ros" file="$(arg network_param_file)"/>
+  <rosparam command="load" ns="$(arg namespace)/nepi_darknet_ros" file="$(arg ros_param_file)"/>
+  <rosparam command="load" ns="$(arg namespace)/nepi_darknet_ros" file="$(arg network_param_file)"/>
 
-  <!-- Start pytorch and ros wrapper -->
-  <node pkg="nepi_pytorch_ros" ns="$(arg namespace)" type="nepi_pytorch_ros" name="nepi_pytorch_ros" output="screen" launch-prefix="$(arg launch_prefix)">
-    <param name="weights_path"          value="$(arg yolo_weights_path)" />
-    <param name="config_path"           value="$(arg yolo_config_path)" />
+  <!-- Start darknet and ros wrapper -->
+  <node pkg="nepi_darknet_ros" ns="$(arg namespace)" type="nepi_darknet_ros" name="nepi_darknet_ros" output="screen" launch-prefix="$(arg launch_prefix)">
+    <param name="weights_path"          value="$(arg weights_path)" />
+    <param name="config_path"           value="$(arg config_path)" />
     <param name="subscribers/camera_reading/topic" value="$(arg input_img)" />
     <param name="yolo_model/threshold/value" value="$(arg detector_threshold)" />
     <param name="publishers/source_image/topic" value="$(arg namespace)/source_image" />
@@ -36,4 +37,5 @@
     <remap from="camera/rgb/image_raw"  to="$(arg image)" />
   </node>
 
+ <!--<node name="republish" type="republish" pkg="image_transport" output="screen" 	args="compressed in:=/front_camera/image_raw raw out:=/camera/image_raw" /> -->
 </launch>
