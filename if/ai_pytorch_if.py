@@ -29,18 +29,18 @@ AI_DICT = dict(
     description = 'Pytorch ai framework support',
     pkg_name = 'nepi_pytorch_ros',
     class_name = 'PytorchAIF',
-    node_file = 'nepi_pytorch_ros.py',
+    node_file = 'nepi_pytorch_ros_node.py',
     node_name = 'nepi_pytorch_ros',
     launch_file = 'pytorch_ros.launch',
-    models_folder = 'pytorch',
+    models_folder = 'pytorch_ros',
     model_prefix = 'pytorch_',
 )
 
 class PytorchAIF(object):
-    def __init__(self, ai_dict,node_namespace, models_lib_path):
-      if node_namespace[-1] == "/":
-        node_namespace = node_namespace[:-1]
-      self.node_namespace = node_namespace
+    def __init__(self, ai_dict,node_base_namespace,models_lib_path):
+      if node_base_namespace[-1] == "/":
+        node_base_namespace = node_base_namespace[:-1]
+      self.node_base_namespace = node_base_namespace
       self.models_lib_path = models_lib_path
       self.pkg_name = ai_dict['pkg_name']
       self.node_name = ai_dict['node_name']
@@ -49,7 +49,7 @@ class PytorchAIF(object):
       self.models_folder = ai_dict['models_folder']
       self.models_folder_path =  os.path.join(self.models_lib_path, self.models_folder)
       rospy.loginfo("Pytorch models path: " + self.models_folder_path)
-      threshold_namespace = self.node_namespace + '/nepi_pytorch_ros/set_threshold'
+      threshold_namespace = self.node_base_namespace + '/' + self.node_name + '/set_threshold'
       self.set_threshold_pub = rospy.Publisher(threshold_namespace, Float32, queue_size=1, latch=True)
     
     #################
@@ -110,12 +110,14 @@ class PytorchAIF(object):
         # Build Pytorch new classifier launch command
         launch_cmd_line = [
             "roslaunch", self.pkg_name, self.launch_file,
-            "namespace:=" + self.node_namespace, 
+            "node_base_namespace:=" + self.node_base_namespace, 
+            "node_name:=" + self.node_name,
+            "file_name:=" + self.file_name,
             "weights_path:=" + os.path.join(self.models_folder_path, "models/weights"),
             "config_path:=" + os.path.join(self.models_folder_path, "models/cfg"),
             "network_param_file:=" + os.path.join(self.models_folder_path, "config", classifier + ".yaml"),
-            "input_img:=" + input_img,
-            "detection_threshold:=" + str(threshold)
+            "source_img_topic:=" + input_img,
+            "detector_threshold:=" + str(threshold)
         ]
         rospy.loginfo("Launching Pytorch ROS Process: " + str(launch_cmd_line))
         self.ros_process = subprocess.Popen(launch_cmd_line)

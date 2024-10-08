@@ -3,15 +3,12 @@
 
 import rospy
 import torch
-import threading
-import copy
-import numpy as np
-import cv2
 
-from sensor_msgs.msg import PointCloud2
+from nepi_edge_sdk_base import nepi_ros
+from nepi_edge_sdk_base import nepi_msg
+from nepi_edge_sdk_base import nepi_img
+
 from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
-from cv_bridge import CvBridge
 
 np.bool = np.bool_
 
@@ -19,120 +16,155 @@ np.bool = np.bool_
 # Define your PyTorch model and load the weights
 # model = ...
 
-class YOLOObjectDetector():
-    CHECK_RATE = 10
-    img_msg = None
-    img_last_stamp = None
-    img_lock = threading.Lock()
-    depth_map_msg = None
-    depth_map_last_stamp = None
-    depth_map_lock = threading.Lock() 
-    pc_msg = None
-    pc_last_stamp = None
-    pc_lock = threading.Lock()
+class PytorchDetector():
 
+    #######################
+    ### Node Initialization
+    DEFAULT_NODE_NAME = "pytorch_ros" # Can be overwitten by luanch command
     def __init__(self):
+        #### APP NODE INIT SETUP ####
+        nepi_ros.init_node(name= self.DEFAULT_NODE_NAME)
+        self.node_name = nepi_ros.get_node_name()
+        self.base_namespace = nepi_ros.get_base_namespace()
+        nepi_msg.createMsgPublishers(self)
+        nepi_msg.publishMsgInfo(self,"Starting Initialization Processes")
+        ##############################
         # Initialize parameters and fields.
-        self.init_params()
-        self.init_fields()
+        node_params = nepi_ros.get_param(self,"~")
+        nepi_msg.publishMsgInfo(self,"Starting node params: " + str(node_params))
+        try:
+            self.node_base_namespace = nepi_ros.get_param(self,"~node_base_namespace")
+            self.weights_path = nepi_ros.get_param(self,"~weights_path")
+            self.config_path = nepi_ros.get_param(self,"~config_path")
+            self.source_image_topic = nepi_ros.get_param(self,"~source_img_topic")
+            self.threshold = nepi_ros.get_param(self,"~detector_threshold")
+        except Exception as e:
+            nepi_msg.publishMsgErr(self,"Failed to get required node info from param server: " + str(e) )
 
-        # Initialize publishers and subscribers.
-        self.img_sub = rospy.Subscriber(self.camera_topic, Image, self.image_cb)
-        self.depth_map_sub = rospy.Subscriber(self.depth_map_topic, Image, self.depth_map_cb)
-        self.pc_sub = rospy.Subscriber(self.pc_topic, PointCloud2, self.pc_cb)
+        try:
+            model_info = nepi_ros.get_param(self,"~model")
+            self.config_file_path = os.path.join(self.weight_path, model_info.weight_file.name)
+            self.config_file_path = os.path.join(self.config_path, model_info.config_file.name)
+            self.classes = model.detection_clases.names
+        except Exception as e:
+            nepi_msg.publishMsgErr(self,"Failed to get required model info from params: " + str(e) )
 
+        # Load the model
         # Initialize the YOLO model.
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = torch.hub.load('/home/nepi/pytorch_ws/models/yolov5', \
+        self.model = torch.load('/home/nepi/pytorch_ws/models/yolov5', \
                                     'custom', \
                                     source="local", \
                                     path="/home/nepi/pytorch_ws/models/yolov5/checkpoints/yolov5s.pt" \
                      ).to(self.device)
+        
+        
+        # Create AI Node Publishers
+        SOURCE_IMAGE_PUB_TOPIC = self.node_base_namespace + "/source_image"
+        self.source_image_pub = rospy.Publisher(SOURCE_IMAGE_PUB_TOPIC, Image, queue_size = 1)
+
+        DETECTION_IMAGE_PUB_TOPIC = self.node_base_namespace + "/detection_image"
+        self.detection_image_pub = rospy.Publisher(DETECTION_IMAGE_PUB_TOPIC, Image,  queue_size = 1)
+        
+        FOUND_OBJECT_PUB_TOPIC = self.node_base_namespace + "/found_object"
+        self.found_object_pub = rospy.Publisher(FOUND_OBJECT_PUB_TOPIC, ObjectCount,  queue_size = 1)
+
+        BOUNDING_BOXES_PUB_TOPIC = self.node_base_namespace + "/bounding_boxes"
+        self.bounding_boxes_pub = rospy.Publisher(BOUNDING_BOXES_PUB_TOPIC, BoundingBoxes, queue_size = 1)
+
+        # Create AI Node Subscribers
+        THRSHOLD_SUB_TOPIC = self.node_base_namespace + '/' + self.node_name + '/set_threshold'
+        self.set_threshold_sub = rospy.Subscriber(THRSHOLD_SUB_TOPIC, Float32, self.updateThresholdCb, queue_size=1)
+
+        IMAGE_SUB_TOPIC = self.source_image_topic
+        self.set_threshold_sub = rospy.Subscriber(IMAGE_SUB_TOPIC, Image, self.updateDetectionCb, queue_size=1)
+
+        #########################################################
+        ## Initiation Complete
+        nepi_msg.publishMsgInfo(self,"Initialization Complete")
+        # Spin forever (until object is detected)
+        nepi_ros.spin()
+        #########################################################        
+              
+
+    def updateThresholdCb(self,msg)
+        theshold = msg.data
+        if (threshold < self.MIN_THRESHOLD):
+            threshold = self.MIN_THRESHOLD
+        elif (threshold > self.MAX_THRESHOLD):
+            threshold = self.MAX_THRESHOLD
+        self.updateThreshold(threshold)
+
+
+    def updateDetectionCb(self,source_img_msg):
+        # Update model settings
         self.model.conf = 0.3  # Confidence threshold (0-1)
         self.model.iou = 0.45  # NMS IoU threshold (0-1)
-        self.model.max_det = 1000  # Maximum number of detections per image
+        self.model.max_det = 20  # Maximum number of detections per image
         self.model.eval()
 
-        
+        #  Convert image from ros to cv2
+        cv2_img = nepi_img.rosimg_to_cv2img(source_img_msg)
+        ros_timestamp = img_msg.header.stamp
 
-        check_interval_sec = float(1) / self.CHECK_RATE
-        rospy.Timer(rospy.Duration(check_interval_sec), self.detection_callback)
+        #  Run model against image
+        results = self.model(self.img)
 
-    def init_fields(self):
-        # OpenCV bridge.
-        self.bridge = CvBridge()
-        self.window_name = 'YOLO-Object-Detector'
-        
-        # Image fields.
-        self.img = None
-        self.img_lock = threading.Lock()
-        self.img_status = False
-        self.img_last_stamp = None
-        
-        # Depth map fields.
-        self.depth = None
-        self.depth_lock = threading.Lock()
-        self.depth_status = False
-        self.depth_last_stamp = None
+        detection_img_msg = source_img_msg
 
-        # Point cloud fields.
-        self.pc = None
-        self.pc_lock = threading.Lock()
-        self.pc_status = False
-        self.pc_last_stamp = None
-
-
-    def init_params(self):
-        rospy.set_param('~camera_topic', '/nepi/s2x/nexigo_n60_fhd_24/idx/color_2d_image')
-        rospy.set_param('~depth_map_topic', '/nepi/s2x/nexigo_n60_fhd_24/idx/depth_map')
-        rospy.set_param('~pc_topic', '/nepi/s2x/nexigo_n60_fhd_24/pointcloud')
-
-        self.camera_topic = rospy.get_param('~camera_topic')
-        self.depth_map_topic = rospy.get_param('~depth_map_topic')
-        self.pc_topic = rospy.get_param('~pc_topic')
-
-
-    def image_cb(self, msg):
-        with self.img_lock:
-            if self.img is not None and msg.header.stamp == self.img_last_stamp:
-                # Ignore because same msg.
-                return
-            
-            # Convert the image message to OpenCV image.
-            try:
-                img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            except CvBridgeError as e:
-                rospy.logerr('CvBridge Error: {}'.format(e))
-                return
-
-            self.img = copy.deepcopy(img)
-            self.img_last_stamp = msg.header.stamp
-
-    def depth_map_cb(self, msg):
-        raise NotImplementedError
-
-    def pc_cb(self, msg):
-        raise NotImplementedError
-    
-    def detection_callback(self, event):
-        with self.img_lock:
-            if self.img is None:
-                # No image yet.
-                return
-
-            # Detect object in the image
-            results = self.model(self.img)
-            
-            # Save results
-            results.save(save_dir='./img/', exist_ok=True)
+        self.publishImages(source_img_msg, detection_img_msg)
 
 
 
-def main():
-    rospy.loginfo('Starting Pytorch YOLO Object Detector Node')
-    rospy.init_node('yolo_object_detector_node', anonymous=True)
-    yolo_object_detector = YOLOObjectDetector()
-    rospy.spin()
+    def publishImages(self,ros_source_img, ros_detection_img):
+        ros_timestamp = 
+        if not rospy.is_shutdown():
+            self.source_image_pub.publish(ros_source_img)
+            self.detection_image_pub_image_pub.publish(ros_detection_img)
+
+    def publishDetectionData(self):
+        detection_dict_list = self.getDetectionData()
+        found_object_msg = ObjectCount()
+        found_object_msg.header.stamp = process_time
+        found_object_msg.count = len(detection_dict_list)
+        if not rospy.is_shutdown():
+            self.found_object_pub.publish(found_object_msg)
+
+        if len(detection_dict_list) > 0:
+            bounding_box_msg_list = []
+            for detection_dict in detection_dict_list:
+                bounding_box_msg = BoundingBox()
+                bounding_box_msg.Class = detection_dict['Class']
+                bounding_box_msg.id = detection_dict['id']
+                bounding_box_msg.uid = detection_dict['uid']
+                bounding_box_msg.probability = detection_dict['probability']
+                bounding_box_msg.xmin = detection_dict['box_xmin']
+                bounding_box_msg.ymin = detection_dict['box_ymin']
+                bounding_box_msg.xmax = detection_dict['box_xmax']
+                bounding_box_msg.ymax = detection_dict['box_ymax']
+                bounding_box_msg_list.append(bounding_box_msg)
+            bounding_boxes_msg = BoundingBoxes()
+            bounding_boxes_msg.header.stamp = process_time
+            bounding_boxes_msg.image_header = image_header
+            bounding_boxes_msg.image_topic = self.source_image_topic
+            bounding_boxes_msg.bounding_boxes = bounding_box_msg_list
+            if not rospy.is_shutdown():
+                self.bounding_boxes_pub.publish(bounding_boxes_msg)
+
+
+
+    def get_classes_color_list(self,classes_str_list):
+        rgb_list = []
+        if len(classes_str_list) > 0:
+            cmap = plt.get_cmap('viridis')
+            color_list = cmap(np.linspace(0, 1, len(classes_str_list))).tolist()
+            for color in color_list:
+                for i in range(3):
+                    rgb.append(int(color[i]*255))
+                rgb_list.append(rgb)
+        return rgb_list
+                
+
 
 if __name__ == '__main__':
-    main()
+    PytorchDetector()
